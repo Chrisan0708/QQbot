@@ -64,22 +64,30 @@ COPY plugins ./plugins
 # 6) 覆盖 site-packages 里的补丁：
 #    - cs2radar：出图前把远程图片内联成 data URI（修 /cs查询 30s 超时）、模板 best_season 兜底
 #    - hotsearch：微博/知乎数据源修复 + 私聊支持 + 异步请求
+#    - capoo：图片按 bytes 发 base64（原来发 file:///app/data/... 路径，
+#      NapCat 在另一个容器里读不到 -> ENOENT）；资源校验改成按文件名补下
 # 注意：不能用 python -c "import nonebot_plugin_cs2radar" 定位路径，
 # 这两个插件的 __init__ 会调用 require()，NoneBot 未初始化时会抛错。改用 find_spec。
 COPY patches ./patches
 RUN set -eux; \
     CS2="$(python -c 'import importlib.util as u, os; print(os.path.dirname(u.find_spec("nonebot_plugin_cs2radar").origin))')"; \
     HOT="$(python -c 'import importlib.util as u, os; print(os.path.dirname(u.find_spec("nonebot_plugin_hotsearch").origin))')"; \
+    CAPOO="$(python -c 'import importlib.util as u, os; print(os.path.dirname(u.find_spec("nonebot_plugin_capoo").origin))')"; \
     test -f "$CS2/renderer.py"; \
     test -d "$CS2/templates"; \
+    test -f "$CAPOO/download.py"; \
     cp patches/cs2radar_renderer.py "$CS2/renderer.py"; \
     cp patches/cs2radar_stats.html "$CS2/templates/stats.html"; \
     cp patches/cs2radar_player_detail.html "$CS2/templates/player_detail.html"; \
     cp patches/hotsearch_init.py "$HOT/__init__.py"; \
+    cp patches/capoo_init.py "$CAPOO/__init__.py"; \
+    cp patches/capoo_download.py "$CAPOO/download.py"; \
     cmp patches/cs2radar_renderer.py "$CS2/renderer.py"; \
     cmp patches/cs2radar_stats.html "$CS2/templates/stats.html"; \
     cmp patches/cs2radar_player_detail.html "$CS2/templates/player_detail.html"; \
     cmp patches/hotsearch_init.py "$HOT/__init__.py"; \
+    cmp patches/capoo_init.py "$CAPOO/__init__.py"; \
+    cmp patches/capoo_download.py "$CAPOO/download.py"; \
     rm -rf patches; \
     echo "patches applied ok"
 

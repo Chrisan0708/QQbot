@@ -174,5 +174,6 @@ scp "data\nonebot_plugin_cs2radar\user_bindings.db" user@服务器:/home/user/qq
 | 出图报 `Executable doesn't exist at /ms-playwright/...` | Chromium 没装进镜像，`--build` 重建 |
 | 卡片中文方块 | 镜像缺 CJK 字体 |
 | 绑定数据没了 | 检查 `LOCALSTORE_DATA_DIR=/app/data` 与 `./data:/app/data` 挂载 |
+| `capoo` 报 `ENOENT ... /app/data/nonebot_plugin_capoo/...gif` | 已修：图片改为 base64 发送（协议端不再读本地文件）。还报就说明镜像没重建，`docker compose up -d --build` |
 | 端口被占用 | Windows 版 bot 还开着，先关掉那套 |
 | 容器反复重启 | `docker compose logs qqbot` 看 `nonebot.init()` 阶段报错（多半是 `.env` 配置项不合法） |

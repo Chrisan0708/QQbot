@@ -1,0 +1,52 @@
+services:
+  qqbot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: qqbot:latest
+    container_name: qqbot
+    restart: unless-stopped
+
+    # 复用现有的 .env（ONEBOT_ACCESS_TOKEN / cs2radar_* / LLM 都在里面）
+    # 注意：这里不要把 .env COPY 进镜像，密钥只留在宿主机
+    env_file:
+      - .env
+
+    # 覆盖 .env 里那几条 Windows 专用配置（compose 的 environment 优先级高于 env_file）
+    environment:
+      TZ: Asia/Shanghai
+      # htmlrender 0.8+ 必须选一个渲染后端，否则所有出图命令报
+      # "Capability `render_html` is not available in this composition"
+      RENDER__PROVIDER: playwright
+      # .env 里是 C:\Users\zhang\... ，Linux 容器里换成镜像内的浏览器目录
+      RENDER__PROVIDER_CONFIG__STORAGE_PATH: /ms-playwright
+      # 容器里是 root 跑 Chromium，必须关沙箱
+      RENDER__PROVIDER_CONFIG__LAUNCH_ARGS: "--no-sandbox --disable-dev-shm-usage --disable-gpu"
+      # 绑定库 / 插件缓存落到挂载卷里，重建容器不丢
+      LOCALSTORE_DATA_DIR: /app/data
+
+    ports:
+      # 绑定地址由 .env 的 BOT_BIND 控制：
+      #   127.0.0.1 -> 只允许本机连接（NapCat 和 bot 同一台机器，推荐）
+      #   0.0.0.0   -> 对外暴露（NapCat 在别的机器时用，记得安全组放行 + 换强 token）
+      # NapCat 的反向 WebSocket：ws://<地址>:8080/onebot/v11/ws
+      - "${BOT_BIND:-0.0.0.0}:8080:8080"
+
+    volumes:
+      - ./data:/app/data
+
+    # Chromium 渲染大图需要，默认 64MB 会崩
+    shm_size: "1gb"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket,sys; s=socket.socket(); sys.exit(s.connect_ex(('127.0.0.1',8080)))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s

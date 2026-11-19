@@ -1,0 +1,19 @@
+.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# 运行时数据（用 volume 挂进去，不进镜像）
+data/
+
+# 本地备份 / 验证输出，不需要进镜像
+.env.bak
+*.bak
+验证_*.png
+
+.git/
+.gitignore
+Dockerfile
+docker-compose.yml
+DOCKER.md

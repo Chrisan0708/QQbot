@@ -1,0 +1,318 @@
+import asyncio
+import base64
+import re
+from pathlib import Path
+from datetime import datetime
+from typing import List, Dict, Any
+
+import httpx
+from jinja2 import Environment, FileSystemLoader
+from nonebot import require
+
+require("nonebot_plugin_htmlrender")
+import nonebot_plugin_htmlrender as htmlrender
+
+# 远程图片直接交给浏览器加载时，Playwright 会一直等 networkidle，
+# 任一图片慢/被墙就会整卡 30 秒后超时。这里先自己把图片取回来内联成 data URI。
+_IMG_SRC_PATTERN = re.compile(r'(<img\b[^>]*?\bsrc=")(https?://[^"]+)(")', re.IGNORECASE)
+_ONERROR_PATTERN = re.compile(r'\s+onerror="[^"]*"', re.IGNORECASE)
+_BLANK_PIXEL = (
+    "data:image/gif;base64,"
+    "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
+)
+_IMAGE_FETCH_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/122.0 Safari/537.36"
+    ),
+    "Referer": "https://www.wmpvp.com/",
+}
+# 队标/头像等图片在多次出图中高度重复，缓存 data URI 可省掉重复下载
+_IMAGE_CACHE: Dict[str, str] = {}
+_IMAGE_CACHE_LIMIT = 256
+_IMAGE_CACHE_MAX_BYTES = 200 * 1024
+# 出图不能被某张慢图拖死：限制并发 + 给整批图片一个总预算
+_IMAGE_FETCH_CONCURRENCY = 8
+_IMAGE_BUDGET_SECONDS = 5.0
+
+
+async def _fetch_image_data_uri(client: httpx.AsyncClient, url: str) -> tuple[str, str | None]:
+    try:
+        resp = await client.get(url)
+        if resp.status_code == 200 and resp.content:
+            content_type = resp.headers.get("content-type", "image/png").split(";")[0].strip()
+            if not content_type.startswith("image/"):
+                content_type = "image/png"
+            encoded = base64.b64encode(resp.content).decode("ascii")
+            return url, f"data:{content_type};base64,{encoded}"
+    except Exception:
+        pass
+    return url, None
+
+
+async def _inline_remote_images(html: str) -> str:
+    urls = list(dict.fromkeys(match.group(2) for match in _IMG_SRC_PATTERN.finditer(html)))
+    mapping: Dict[str, str] = {url: _IMAGE_CACHE[url] for url in urls if url in _IMAGE_CACHE}
+    pending = [url for url in urls if url not in mapping]
+    if pending:
+        semaphore = asyncio.Semaphore(_IMAGE_FETCH_CONCURRENCY)
+
+        async with httpx.AsyncClient(
+            timeout=4.0, follow_redirects=True, headers=_IMAGE_FETCH_HEADERS
+        ) as client:
+
+            async def guarded(url: str) -> tuple[str, str | None]:
+                async with semaphore:
+                    return await _fetch_image_data_uri(client, url)
+
+            tasks = [asyncio.create_task(guarded(url)) for url in pending]
+            done, not_done = await asyncio.wait(tasks, timeout=_IMAGE_BUDGET_SECONDS)
+            for task in not_done:
+                task.cancel()
+            for task in done:
+                try:
+                    url, data_uri = task.result()
+                except Exception:
+                    continue
+                if data_uri:
+                    mapping[url] = data_uri
+                    if len(data_uri) <= _IMAGE_CACHE_MAX_BYTES and len(_IMAGE_CACHE) < _IMAGE_CACHE_LIMIT:
+                        _IMAGE_CACHE[url] = data_uri
+    # onerror 兜底会额外触发一次远程请求，一并去掉
+    html = _ONERROR_PATTERN.sub("", html)
+    return _IMG_SRC_PATTERN.sub(
+        lambda match: match.group(1) + mapping.get(match.group(2), _BLANK_PIXEL) + match.group(3),
+        html,
+    )
+
+
+async def html_to_pic(html: str, **kwargs: Any) -> bytes:
+    """兼容 nonebot-plugin-htmlrender 0.6.x/0.7.x 与 0.8.x+ 的 HTML 转图片函数"""
+    html = await _inline_remote_images(html)
+    if hasattr(htmlrender, "html_to_pic"):
+        return await htmlrender.html_to_pic(html=html, **kwargs)
+
+    viewport = kwargs.get("viewport")
+    width = 800
+    if isinstance(viewport, dict) and "width" in viewport:
+        try:
+            width = int(viewport["width"])
+        except Exception:
+            pass
+    elif "width" in kwargs:
+        try:
+            width = int(kwargs["width"])
+        except Exception:
+            pass
+
+    if hasattr(htmlrender, "render_html"):
+        res = await htmlrender.render_html(html=html, width=width)
+        return bytes(res) if not isinstance(res, bytes) else res
+
+    raise RuntimeError("nonebot_plugin_htmlrender has neither html_to_pic nor render_html")
+
+
+TEMPLATE_PATH = Path(__file__).parent / "templates"
+env = Environment(loader=FileSystemLoader(TEMPLATE_PATH))
+
+
+async def _ensure_avatar_data_uri(player_data: dict) -> None:
+    summary = player_data.get("summary")
+    if isinstance(summary, dict) and summary.get("avatar_data_uri"):
+        return
+    if player_data.get("avatar_data_uri"):
+        return
+
+    url = None
+    if isinstance(summary, dict):
+        url = summary.get("avatarUrl") or summary.get("avatar")
+    if not url:
+        url = player_data.get("avatar") or player_data.get("avatar_url")
+
+    if url and isinstance(url, str) and url.startswith("http"):
+        try:
+            async with httpx.AsyncClient(timeout=3.5, follow_redirects=True) as client:
+                resp = await client.get(url)
+                if resp.status_code == 200:
+                    ct = resp.headers.get("content-type", "image/png").split(";")[0].strip()
+                    b64 = base64.b64encode(resp.content).decode("ascii")
+                    uri = f"data:{ct};base64,{b64}"
+                    player_data["avatar_data_uri"] = uri
+                    player_data["avatar"] = uri
+                    if isinstance(summary, dict):
+                        summary["avatar_data_uri"] = uri
+                    return
+        except Exception:
+            pass
+    if isinstance(summary, dict):
+        summary["avatar_data_uri"] = ""
+    player_data["avatar_data_uri"] = ""
+
+
+def _nested_value(source: Any, path: str) -> Any:
+    current = source
+    for part in path.split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
+
+
+def _pick_int(sources: list[Any], *aliases: str) -> int:
+    for alias in aliases:
+        for source in sources:
+            value = _nested_value(source, alias)
+            if value not in (None, ""):
+                try:
+                    return int(float(value))
+                except Exception:
+                    continue
+    return 0
+
+
+def _build_highlight_summary(*sources: Any) -> dict[str, Any]:
+    source_list = [source for source in sources if isinstance(source, dict)]
+    kills_2 = _pick_int(source_list, "k2", "doubleKill", "double_kill", "twoKill", "two_kill", "multiKill2", "2k", "kill2", "2kill", "double_kill_total", "2_kill", "kill_2")
+    kills_3 = _pick_int(source_list, "k3", "tripleKill", "threeKill", "three_kill", "multiKill3", "3k", "kill3", "3kill", "triple_kill_total", "3_kill", "kill_3")
+    kills_4 = _pick_int(source_list, "k4", "quadraKill", "fourKill", "four_kill", "multiKill4", "4k", "kill4", "4kill", "quadra_kill_total", "4_kill", "kill_4")
+    kills_5 = _pick_int(source_list, "k5", "pentaKill", "fiveKill", "five_kill", "ace", "multiKill5", "5k", "kill5", "5kill", "penta_kill_total", "5_kill", "kill_5")
+    first_kills = _pick_int(source_list, "firstKill", "firstKills", "first_kill", "entryKill", "entryKills", "firstBlood", "first_kill_total")
+    clutch_1v1 = _pick_int(source_list, "vs1", "clutch1", "clutch_1", "clutch1v1", "oneVOne", "v1_total", "1v1", "end_1v1")
+    clutch_1v2 = _pick_int(source_list, "vs2", "clutch2", "clutch_2", "clutch1v2", "oneVTwo", "v2_total", "1v2", "end_1v2")
+    clutch_1v3 = _pick_int(source_list, "vs3", "clutch3", "clutch_3", "clutch1v3", "oneVThree", "v3_total", "1v3", "end_1v3")
+    clutch_1v4 = _pick_int(source_list, "vs4", "clutch4", "clutch_4", "clutch1v4", "oneVFour", "v4_total", "1v4", "end_1v4")
+    clutch_1v5 = _pick_int(source_list, "vs5", "clutch5", "clutch_5", "clutch1v5", "oneVFive", "v5_total", "1v5", "end_1v5")
+    multi_kills = _pick_int(source_list, "multiKill", "multi_kill", "multiKills", "manyKill", "multi_kill_total")
+    if multi_kills <= 0:
+        multi_kills = kills_2 + kills_3 + kills_4 + kills_5
+    clutch_wins = _pick_int(source_list, "clutchWin", "clutchWins", "endGameWin", "1vN_win_total", "1vN_win", "end_total")
+    if clutch_wins <= 0:
+        clutch_wins = clutch_1v1 + clutch_1v2 + clutch_1v3 + clutch_1v4 + clutch_1v5
+    return {
+        "first_kills": first_kills,
+        "multi_kills": multi_kills,
+        "clutch_wins": clutch_wins,
+        "summary_cards": [
+            {"label": "首杀", "value": first_kills},
+            {"label": "多杀", "value": multi_kills},
+            {"label": "残局", "value": clutch_wins},
+            {"label": "2K/3K/4K/5K", "value": f"{kills_2}/{kills_3}/{kills_4}/{kills_5}"},
+        ],
+        "clutch_cards": [
+            {"label": "1v1", "value": clutch_1v1},
+            {"label": "1v2", "value": clutch_1v2},
+            {"label": "1v3", "value": clutch_1v3},
+            {"label": "1v4", "value": clutch_1v4},
+            {"label": "1v5", "value": clutch_1v5},
+        ],
+    }
+
+
+async def render_events_card(events: List[Dict[str, Any]]) -> bytes:
+    template = env.get_template("events.html")
+    processed_events = []
+    for event in events:
+        title = event.get("title", "未知赛事")
+        if title == "进行中" and event.get("status"):
+            title = event.get("status")
+            status = "进行中"
+        else:
+            status = event.get("status", "未开始")
+
+        processed_events.append(
+            {
+                "title": title,
+                "level": event.get("level", "A级"),
+                "status": status,
+                "time": event.get("time", ""),
+                "location": event.get("location", ""),
+                "prize": event.get("prize", ""),
+                "teams": event.get("teams", ""),
+            }
+        )
+
+    html_content = template.render(
+        events=processed_events,
+        now=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    )
+
+    return await html_to_pic(html=html_content, viewport={"width": 800, "height": 10})
+
+
+async def render_matches_card(matches: List[Dict[str, Any]]) -> bytes:
+    template = env.get_template("matches.html")
+    html_content = template.render(
+        matches=matches[:15],
+        now=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    )
+
+    return await html_to_pic(html=html_content, viewport={"width": 800, "height": 10})
+
+
+async def render_results_card(results: List[Dict[str, Any]]) -> bytes:
+    template = env.get_template("match_results.html")
+    html_content = template.render(
+        results=results[:20],
+        now=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    )
+
+    return await html_to_pic(html=html_content, viewport={"width": 800, "height": 10})
+
+
+async def render_stats_card(data: dict) -> bytes:
+    await _ensure_avatar_data_uri(data)
+    template = env.get_template("stats.html")
+    stats = data.get("stats", {})
+    combat = data.get("combat") or _build_highlight_summary(stats, stats.get("career", {}), stats.get("best_season", {}), stats.get("home", {}))
+    html_content = template.render(
+        nickname=data.get("nickname", "Unknown"),
+        avatar=data.get("avatar_data_uri") or data.get("avatar", ""),
+        stats=stats,
+        combat=combat,
+        llm_title=data.get("llm_title"),
+        llm_detail=data.get("llm_detail"),
+        llm_sections=data.get("llm_sections", []),
+        now=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    )
+
+    return await html_to_pic(html=html_content, viewport={"width": 960, "height": 10})
+
+
+async def render_player_detail(player_data: dict) -> bytes:
+    template = env.get_template("player_detail.html")
+    hltv_id = player_data.get("hltv_id")
+    name = player_data.get("name", "player")
+    hltv_link = f"https://www.hltv.org/player/{hltv_id}/{name}" if hltv_id else None
+
+    html_content = template.render(
+        player=player_data,
+        hltv_link=hltv_link,
+        now=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    )
+    return await html_to_pic(html=html_content, viewport={"width": 800, "height": 10})
+
+
+async def render_pw_stats_card(player_data: dict) -> bytes:
+    await _ensure_avatar_data_uri(player_data)
+    template = env.get_template("pw_stats.html")
+    combat = player_data.get("combat") or _build_highlight_summary(player_data.get("stats", {}))
+    html_content = template.render(
+        player=player_data,
+        combat=combat,
+        llm_title=player_data.get("llm_title"),
+        llm_detail=player_data.get("llm_detail"),
+        llm_sections=player_data.get("llm_sections", []),
+        now=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    )
+
+    return await html_to_pic(html=html_content, viewport={"width": 960, "height": 10})
+
+
+async def render_match_detail_card(view_data: dict) -> bytes:
+    template = env.get_template("match_detail.html")
+    html_content = template.render(
+        data=view_data,
+        now=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    )
+
+    return await html_to_pic(html=html_content, viewport={"width": 960, "height": 10})

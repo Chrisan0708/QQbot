@@ -1,0 +1,27 @@
+# ===== Python / 虚拟环境 =====
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# ===== 密钥与本地配置（模板见 .env.example）=====
+.env
+.env.*
+!.env.example
+
+# ===== 运行时数据（绑定库 / 表情包缓存），不进仓库 =====
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# ===== 本地备份 / 验证产物 =====
+*.bak
+验证_*.png
+build.log
+
+# ===== 系统 / 编辑器 =====
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

@@ -12,3 +12,4 @@ nonebot-plugin-capoo==1.0.0
 nonebot-plugin-auto-sendlike==0.0.12
 nonebot-plugin-cs2radar==0.2.2
 nonebot-plugin-hotsearch==0.1.1
+nonebot-plugin-aitalk==3.13.38

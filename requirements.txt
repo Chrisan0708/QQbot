@@ -12,4 +12,8 @@ nonebot-plugin-capoo==1.0.0
 nonebot-plugin-auto-sendlike==0.0.12
 nonebot-plugin-cs2radar==0.2.2
 nonebot-plugin-hotsearch==0.1.1
-nonebot-plugin-aitalk==3.13.38
+
+# AI 对话改用 plugins/nonebot_plugin_aichat（只依赖 httpx，走 OpenAI 兼容接口）。
+# 这里故意不装 nonebot-plugin-aitalk：它会带进 fish-audio-sdk 并改动 httpx，
+# 和 analysis-bilibili 要求的 httpx 版本打架。要恢复就把下面这行取消注释。
+# nonebot-plugin-aitalk==3.13.38

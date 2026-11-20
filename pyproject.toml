@@ -13,7 +13,6 @@ dependencies = [
     "nonebot-plugin-auto-sendlike>=0.0.12",
     "nonebot-plugin-cs2radar>=0.2.2",
     "nonebot-plugin-hotsearch>=0.1.1",
-    "nonebot-plugin-aitalk>=3.13.38",
 ]
 
 [tool.nonebot]
@@ -35,7 +34,6 @@ nonebot-plugin-capoo = ["nonebot_plugin_capoo"]
 nonebot-plugin-auto-sendlike = ["nonebot-plugin-auto-sendlike"]
 nonebot-plugin-cs2radar = ["nonebot_plugin_cs2radar"]
 nonebot-plugin-hotsearch = ["nonebot_plugin_hotsearch"]
-nonebot-plugin-aitalk = ["nonebot_plugin_aitalk"]
 
 
 

@@ -59,9 +59,37 @@ AICHAT_MODEL_NAME=deepseek-chat
 | `AICHAT_TIMEOUT` | `60` | 单次请求超时（秒） |
 | `AICHAT_TRIGGER_GROUP` | `true` | 群聊 @ 时是否回复 |
 | `AICHAT_TRIGGER_PRIVATE` | `true` | 私聊是否回复 |
+| `AICHAT_SPLIT_REPLY` | `true` | 多行回复是否按行拆成多条消息发送（`false` = 整段一条发） |
+| `AICHAT_SPLIT_DELAY` | `0.6` | 拆开后每条之间的间隔秒数（太快容易被风控） |
+| `AICHAT_SPLIT_MAX` | `6` | 一次回复最多拆几条，超出的行合并到最后一条 |
 | `AICHAT_SYSTEM_PROMPT` | 内置人设 | 换人设就改这个 |
 
 **不带前缀的写法也认**：`API_KEY` / `API_ENDPOINT` / `MODEL_NAME` / `MAX_HISTORY` / `MAX_TOKEN` 会被当成对应的 `AICHAT_*` 使用（两种同时存在时以 `AICHAT_*` 为准）。
+
+### 回复是一条还是多条
+
+模型经常一次回好几行，默认会**按行拆成多条 QQ 消息**发出去（每条之间隔 0.6 秒）：
+
+```
+用户：@机器人 用三行回答
+机器人：能啊
+机器人：就这样
+机器人：一句话一行
+```
+
+想恢复成「一整段一条消息」：
+
+```ini
+AICHAT_SPLIT_REPLY=false
+```
+
+另外，如果你的目的是**让模型少换行**（而不是拆消息），可以配合改人设：
+
+```ini
+AICHAT_SYSTEM_PROMPT=你是一个QQ群友，回答只写一段话，不要换行，不要列表，不要Markdown。
+```
+
+两者不冲突：`SPLIT_REPLY=false` + 上面的人设 = 一条干净的单行回复。
 
 ### 常见服务商写法
 

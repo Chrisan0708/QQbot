@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Awaitable, Callable
 
@@ -122,6 +123,35 @@ async def _should_chat(event: MessageEvent) -> bool:
 aichat = on_message(rule=Rule(_should_chat), priority=90, block=True)
 
 
+def split_reply(text: str, limit: int) -> list[str]:
+    """把多行回复拆成多条消息。
+
+    - 按行拆，丢掉空行
+    - 行数超过 limit 时，多出来的行合并成最后一条，避免刷屏
+    """
+    lines = [line.strip() for line in text.splitlines()]
+    lines = [line for line in lines if line]
+    if not lines:
+        return [text.strip()]
+    if len(lines) <= limit:
+        return lines
+    return lines[: limit - 1] + ["\n".join(lines[limit - 1:])]
+
+
+async def _send_reply(reply: str) -> None:
+    """按配置发送回复：整段一条，或者按行拆成多条。"""
+    if not plugin_config.aichat_split_reply:
+        await aichat.send(reply)
+        return
+
+    parts = split_reply(reply, plugin_config.aichat_split_max)
+    logger.info(f"[aichat] 拆成 {len(parts)} 条发送")
+    for index, part in enumerate(parts):
+        if index:
+            await asyncio.sleep(plugin_config.aichat_split_delay)
+        await aichat.send(part)
+
+
 @aichat.handle()
 async def _handle_chat(bot: Bot, event: MessageEvent) -> None:
     question = extract_text(event)
@@ -167,7 +197,8 @@ async def _handle_chat(bot: Bot, event: MessageEvent) -> None:
         session.messages.append({"role": "assistant", "content": reply})
         trim_history(session, plugin_config.aichat_max_history, plugin_config.aichat_max_token)
 
-    await aichat.send(reply)
+    # 发送：默认按行拆成多条（AICHAT_SPLIT_REPLY 可关）
+    await _send_reply(reply)
 
     # 外部钩子（TTS 等），出错不影响主流程
     for hook in list(_reply_hooks):

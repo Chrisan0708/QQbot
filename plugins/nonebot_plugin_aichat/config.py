@@ -55,6 +55,24 @@ class Config(BaseModel):
         default=True, description="私聊是否直接回复"
     )
 
+    # ---- 回复的发送方式 ----
+    aichat_split_reply: bool = Field(
+        default=True,
+        description="多行回复是否按行拆成多条消息发送（false = 整段一条发）",
+    )
+    aichat_split_delay: float = Field(
+        default=0.6,
+        ge=0.0,
+        le=5.0,
+        description="拆分后每条消息之间的间隔（秒），太快容易被风控",
+    )
+    aichat_split_max: int = Field(
+        default=6,
+        ge=1,
+        le=20,
+        description="一次回复最多拆成几条，超出的行会合并到最后一条",
+    )
+
     # ---- 人设 ----
     aichat_system_prompt: str = Field(
         default=DEFAULT_SYSTEM_PROMPT, description="system prompt（人设）"
